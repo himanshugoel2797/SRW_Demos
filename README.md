@@ -9,7 +9,7 @@
 
 Computes:
 
-![equation](http://www.sciweavers.org/tex2img.php?eq=%5Cint_%7B20%7D%5E%7B40%7D%20%5Cint_%7B-50%7D%5E%7B50%7D%20x%5E2y%20%5C%2C%20dx%20%5C%2C%20dy&bc=White&fc=Black&im=jpg&fs=12&ff=arev&edit=0)
+![equation](equation.png)
 
 Uses rectangular integration/midpoint rule for the calculation.
 
