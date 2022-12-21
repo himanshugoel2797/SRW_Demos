@@ -36,23 +36,23 @@ void mutIntens_CPU(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStar
         pEzT += ((iter - iter0) * nxnz * 2);
 
         double inv_iter_p_1 = 1. / (iter + 1);
-        for(long long it=itStart; it<=itEnd; it++) //OC16042021 (to enable partial update of MI/CSD)
-        //for(long long it=0; it<=(itEnd-itStart); it++) //OC03032021 (to enable partial update of MI/CSD)
-        //for(long long it=0; it<nxnz; it++)
+        for (long long it = itStart; it <= itEnd; it++) //OC16042021 (to enable partial update of MI/CSD)
+            //for(long long it=0; it<=(itEnd-itStart); it++) //OC03032021 (to enable partial update of MI/CSD)
+            //for(long long it=0; it<nxnz; it++)
         {
-            float *pMI = pMI0 + (it - itStart)*PerArg; //OC16042021
+            float* pMI = pMI0 + (it - itStart) * PerArg; //OC16042021
             //float *pMI = pMI0 + it*PerArg;
-            for(long long i=0; i<=it; i++)
+            for (long long i = 0; i <= it; i++)
             {
                 //if(res = MutualIntensityComponent(pEx, pExT, pEz, pEzT, PolCom, iter, pMI)) return res;
 
                 double ExRe = 0., ExIm = 0., EzRe = 0., EzIm = 0.;
                 double ExReT = 0., ExImT = 0., EzReT = 0., EzImT = 0.;
-                if(EhOK) { ExRe = *pEx; ExIm = *(pEx + 1); ExReT = *pExT; ExImT = *(pExT + 1); }
-                if(EvOK) { EzRe = *pEz; EzIm = *(pEz + 1); EzReT = *pEzT; EzImT = *(pEzT + 1); }
+                if (EhOK) { ExRe = *pEx; ExIm = *(pEx + 1); ExReT = *pExT; ExImT = *(pExT + 1); }
+                if (EvOK) { EzRe = *pEz; EzIm = *(pEz + 1); EzReT = *pEzT; EzImT = *(pEzT + 1); }
                 double ReMI = 0., ImMI = 0.;
 
-                switch(PolCom)
+                switch (PolCom)
                 {
                 case 0: // Lin. Hor.
                 {
@@ -60,93 +60,93 @@ void mutIntens_CPU(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStar
                     //c+d = ExReT -ExImT
                     //(ac - bd) = ExRe*ExReT + ExIm*ExImT
                     //(ad + bc) = -ExRe*ExImT + ExIm*ExReT
-                    ReMI = ExRe*ExReT + ExIm*ExImT;
-                    ImMI = ExIm*ExReT - ExRe*ExImT;
+                    ReMI = ExRe * ExReT + ExIm * ExImT;
+                    ImMI = ExIm * ExReT - ExRe * ExImT;
                     break;
                 }
                 case 1: // Lin. Vert.
                 {
-                    ReMI = EzRe*EzReT + EzIm*EzImT;
-                    ImMI = EzIm*EzReT - EzRe*EzImT;
+                    ReMI = EzRe * EzReT + EzIm * EzImT;
+                    ImMI = EzIm * EzReT - EzRe * EzImT;
                     break;
                 }
                 case 2: // Linear 45 deg.
                 {
                     double ExRe_p_EzRe = ExRe + EzRe, ExIm_p_EzIm = ExIm + EzIm;
                     double ExRe_p_EzReT = ExReT + EzReT, ExIm_p_EzImT = ExImT + EzImT;
-                    ReMI = 0.5*(ExRe_p_EzRe*ExRe_p_EzReT + ExIm_p_EzIm*ExIm_p_EzImT);
-                    ImMI = 0.5*(ExIm_p_EzIm*ExRe_p_EzReT - ExRe_p_EzRe*ExIm_p_EzImT);
+                    ReMI = 0.5 * (ExRe_p_EzRe * ExRe_p_EzReT + ExIm_p_EzIm * ExIm_p_EzImT);
+                    ImMI = 0.5 * (ExIm_p_EzIm * ExRe_p_EzReT - ExRe_p_EzRe * ExIm_p_EzImT);
                     break;
                 }
                 case 3: // Linear 135 deg.
                 {
                     double ExRe_mi_EzRe = ExRe - EzRe, ExIm_mi_EzIm = ExIm - EzIm;
                     double ExRe_mi_EzReT = ExReT - EzReT, ExIm_mi_EzImT = ExImT - EzImT;
-                    ReMI = 0.5*(ExRe_mi_EzRe*ExRe_mi_EzReT + ExIm_mi_EzIm*ExIm_mi_EzImT);
-                    ImMI = 0.5*(ExIm_mi_EzIm*ExRe_mi_EzReT - ExRe_mi_EzRe*ExIm_mi_EzImT);
+                    ReMI = 0.5 * (ExRe_mi_EzRe * ExRe_mi_EzReT + ExIm_mi_EzIm * ExIm_mi_EzImT);
+                    ImMI = 0.5 * (ExIm_mi_EzIm * ExRe_mi_EzReT - ExRe_mi_EzRe * ExIm_mi_EzImT);
                     break;
                 }
                 case 5: // Circ. Left //OC08092019: corrected to be in compliance with definitions for right-hand frame (x,z,s) and with corresponding definition and calculation of Stokes params
-                //case 4: // Circ. Right
+                    //case 4: // Circ. Right
                 {
                     double ExRe_mi_EzIm = ExRe - EzIm, ExIm_p_EzRe = ExIm + EzRe;
                     double ExRe_mi_EzImT = ExReT - EzImT, ExIm_p_EzReT = ExImT + EzReT;
-                    ReMI = 0.5*(ExRe_mi_EzIm*ExRe_mi_EzImT + ExIm_p_EzRe*ExIm_p_EzReT);
-                    ImMI = 0.5*(ExIm_p_EzRe*ExRe_mi_EzImT - ExRe_mi_EzIm*ExIm_p_EzReT);
+                    ReMI = 0.5 * (ExRe_mi_EzIm * ExRe_mi_EzImT + ExIm_p_EzRe * ExIm_p_EzReT);
+                    ImMI = 0.5 * (ExIm_p_EzRe * ExRe_mi_EzImT - ExRe_mi_EzIm * ExIm_p_EzReT);
                     break;
                 }
                 case 4: // Circ. Right //OC08092019: corrected to be in compliance with definitions for right-hand frame (x,z,s) and with corresponding definition and calculation of Stokes params
-                //case 5: // Circ. Left
+                    //case 5: // Circ. Left
                 {
                     double ExRe_p_EzIm = ExRe + EzIm, ExIm_mi_EzRe = ExIm - EzRe;
                     double ExRe_p_EzImT = ExReT + EzImT, ExIm_mi_EzReT = ExImT - EzReT;
-                    ReMI = 0.5*(ExRe_p_EzIm*ExRe_p_EzImT + ExIm_mi_EzRe*ExIm_mi_EzReT);
-                    ImMI = 0.5*(ExIm_mi_EzRe*ExRe_p_EzImT - ExRe_p_EzIm*ExIm_mi_EzReT);
+                    ReMI = 0.5 * (ExRe_p_EzIm * ExRe_p_EzImT + ExIm_mi_EzRe * ExIm_mi_EzReT);
+                    ImMI = 0.5 * (ExIm_mi_EzRe * ExRe_p_EzImT - ExRe_p_EzIm * ExIm_mi_EzReT);
                     break;
                 }
                 case -1: // s0
                 {
-                    ReMI = ExRe*ExReT + ExIm*ExImT + EzRe*EzReT + EzIm*EzImT;
-                    ImMI = ExIm*ExReT - ExRe*ExImT + EzIm*EzReT - EzRe*EzImT;
+                    ReMI = ExRe * ExReT + ExIm * ExImT + EzRe * EzReT + EzIm * EzImT;
+                    ImMI = ExIm * ExReT - ExRe * ExImT + EzIm * EzReT - EzRe * EzImT;
                     break;
                 }
                 case -2: // s1
                 {
-                    ReMI = ExRe*ExReT + ExIm*ExImT - (EzRe*EzReT + EzIm*EzImT);
-                    ImMI = ExIm*ExReT - ExRe*ExImT - (EzIm*EzReT - EzRe*EzImT);
+                    ReMI = ExRe * ExReT + ExIm * ExImT - (EzRe * EzReT + EzIm * EzImT);
+                    ImMI = ExIm * ExReT - ExRe * ExImT - (EzIm * EzReT - EzRe * EzImT);
                     break;
                 }
                 case -3: // s2
                 {
-                    ReMI = ExImT*EzIm + ExIm*EzImT + ExReT*EzRe + ExRe*EzReT;
-                    ImMI = ExReT*EzIm - ExRe*EzImT - ExImT*EzRe + ExIm*EzReT;
+                    ReMI = ExImT * EzIm + ExIm * EzImT + ExReT * EzRe + ExRe * EzReT;
+                    ImMI = ExReT * EzIm - ExRe * EzImT - ExImT * EzRe + ExIm * EzReT;
                     break;
                 }
                 case -4: // s3
                 {
-                    ReMI = ExReT*EzIm + ExRe*EzImT - ExImT*EzRe - ExIm*EzReT;
-                    ImMI = ExIm*EzImT - ExImT*EzIm - ExReT*EzRe + ExRe*EzReT;
+                    ReMI = ExReT * EzIm + ExRe * EzImT - ExImT * EzRe - ExIm * EzReT;
+                    ImMI = ExIm * EzImT - ExImT * EzIm - ExReT * EzRe + ExRe * EzReT;
                     break;
                 }
                 default: // total mutual intensity, same as s0
                 {
-                    ReMI = ExRe*ExReT + ExIm*ExImT + EzRe*EzReT + EzIm*EzImT;
-                    ImMI = ExIm*ExReT - ExRe*ExImT + EzIm*EzReT - EzRe*EzImT;
+                    ReMI = ExRe * ExReT + ExIm * ExImT + EzRe * EzReT + EzIm * EzImT;
+                    ImMI = ExIm * ExReT - ExRe * ExImT + EzIm * EzReT - EzRe * EzImT;
                     break;
                     //return CAN_NOT_EXTRACT_MUT_INT;
                 }
                 }
-                if(iter == 0)
+                if (iter == 0)
                 {
                     pMI[0] = (float)ReMI;
                     pMI[1] = (float)ImMI;
                 }
-                else if(iter > 0)
+                else if (iter > 0)
                 {
                     //double iter_p_1 = iter + 1; //OC20012020
                     //long long iter_p_1 = iter + 1;
-                    pMI[0] = (float)((pMI[0]*iter + ReMI)*inv_iter_p_1); //OC08052021
-                    pMI[1] = (float)((pMI[1]*iter + ImMI)*inv_iter_p_1);
+                    pMI[0] = (float)((pMI[0] * iter + ReMI) * inv_iter_p_1); //OC08052021
+                    pMI[1] = (float)((pMI[1] * iter + ImMI) * inv_iter_p_1);
                     //pMI[0] = (float)((pMI[0]*iter + ReMI)/iter_p_1);
                     //pMI[1] = (float)((pMI[1]*iter + ImMI)/iter_p_1);
                 }
@@ -185,29 +185,29 @@ int main() {
     printf("Initializing data...\n");
 
     //Allocate memory and populate with random data
-    float *pEx = new float[tot_iter*nx*nz*2];
-    float *pEz = new float[tot_iter*nx*nz*2];
-    float *pMI = new float[(nx*nz - itStart)*nx*nz*2];
-    float *pMI_tmp = new float[(nx*nz - itStart)*nx*nz*2];
+    float* pEx = new float[tot_iter * nx * nz * 2];
+    float* pEz = new float[tot_iter * nx * nz * 2];
+    float* pMI = new float[(nx * nz - itStart) * nx * nz * 2];
+    float* pMI_tmp = new float[(nx * nz - itStart) * nx * nz * 2];
 
-    float *pMI_GPU, *pMI_GPU2, *pEx_GPU, *pEz_GPU;
-    cudaMalloc((void**)&pMI_GPU, (nx*nz - itStart)*nx*nz*2 * sizeof(float));
+    float* pMI_GPU, * pMI_GPU2, * pEx_GPU, * pEz_GPU;
+    cudaMalloc((void**)&pMI_GPU, (nx * nz - itStart) * nx * nz * 2 * sizeof(float));
     cudaMalloc((void**)&pMI_GPU2, (nx * nz - itStart) * nx * nz * 2 * sizeof(float));
-    cudaMalloc((void**)&pEx_GPU, tot_iter*nx*nz*2*sizeof(float));
-    cudaMalloc((void**)&pEz_GPU, tot_iter*nx*nz*2*sizeof(float));
+    cudaMalloc((void**)&pEx_GPU, tot_iter * nx * nz * 2 * sizeof(float));
+    cudaMalloc((void**)&pEz_GPU, tot_iter * nx * nz * 2 * sizeof(float));
 
     srand(0);
-    for (int i = 0; i < tot_iter*nx*nz*2; i++) {
+    for (int i = 0; i < tot_iter * nx * nz * 2; i++) {
         pEx[i] = ((rand() % (2 * float_pres)) - float_pres) / (float)float_pres;
         pEz[i] = ((rand() % (2 * float_pres)) - float_pres) / (float)float_pres;
     }
     for (int i = 0; i < (nx * nz - itStart) * nx * nz * 2; i++) pMI[i] = 0.f;
 
-    cudaMemcpy(pEx_GPU, pEx, tot_iter*nx*nz*2*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(pEz_GPU, pEz, tot_iter*nx*nz*2*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(pMI_GPU, pMI, (nx*nz - itStart)*nx*nz*2*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(pEx_GPU, pEx, tot_iter * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(pEz_GPU, pEz, tot_iter * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(pMI_GPU, pMI, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(pMI_GPU2, pMI, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
-    
+
     //Create events for timing
     cudaEvent_t start_GPU, stop_GPU;
     cudaEventCreate(&start_GPU);
@@ -217,10 +217,10 @@ int main() {
     printf("Running CPU version...\n");
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < cpu_benchmarking_iter; i++)
-        mutIntens_CPU<PolCom>(pEx, pEz, pMI, nx*nz, itStart, 2, iter0, tot_iter, EhOK, EvOK);
+        mutIntens_CPU<PolCom>(pEx, pEz, pMI, nx * nz, itStart, 2, iter0, tot_iter, EhOK, EvOK);
     auto end = std::chrono::high_resolution_clock::now();
 
-    if (benchmarking) 
+    if (benchmarking)
     {
         std::chrono::duration<double> elapsed = end - start;
         printf("CPU version took %f seconds\n", elapsed.count() / cpu_benchmarking_iter);
@@ -231,7 +231,7 @@ int main() {
 
     cudaEventRecord(start_GPU);
     for (int i = 0; i < benchmarking_iter; i++)
-        MutualIntensityComponentCUDA_Hg(pEx_GPU, pEz_GPU, pMI_GPU, nx*nz, itStart, nx*nz, 2, iter0, tot_iter, PolCom, EhOK, EvOK);
+        MutualIntensityComponentCUDA_Hg(pEx_GPU, pEz_GPU, pMI_GPU, nx * nz, itStart, nx * nz, 2, iter0, tot_iter, PolCom, EhOK, EvOK);
     cudaEventRecord(stop_GPU);
 
     //Wait for the GPU to finish
@@ -243,14 +243,14 @@ int main() {
         cudaEventElapsedTime(&milliseconds, start_GPU, stop_GPU);
         printf("HG GPU version took %f seconds\n", milliseconds / 1000 / benchmarking_iter);
     }
-    
+
     {
-        cudaMemcpy(pMI_tmp, pMI_GPU, (nx*nz - itStart)*nx*nz*2 * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(pMI_tmp, pMI_GPU, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyDeviceToHost);
 
         //Compare the results
         bool error_found = false;
         printf("Comparing results...\n");
-        for (int i = 0; i < (nx*nz - itStart)*nx*nz*2; i++) {
+        for (int i = 0; i < (nx * nz - itStart) * nx * nz * 2; i++) {
             if (fabs(pMI[i] - pMI_tmp[i]) > 0.0001) {
                 int it = i / (nx * nz * 2);
                 int i_ = (i % (nx * nz * 2)) / 2;
@@ -267,7 +267,8 @@ int main() {
 
         if (!error_found) {
             printf("No errors found!\n");
-        }else
+        }
+        else
             return 0;
     }
 
@@ -285,7 +286,7 @@ int main() {
     auto status = cublasCher(handle, CUBLAS_FILL_MODE_UPPER, nx * nz, &alpha_f, (cuComplex*)pEx_GPU, 1, (cuComplex*)pMI_GPU2, nx * nz);
     //cublasCtpttr(handle, CUBLAS_FILL_MODE_LOWER, nx * nz, (cuComplex*)pMI_GPU, (cuComplex*)pMI_GPU2, nx * nz);
     cudaEventRecord(stop_GPU);
-    
+
     //Wait for the GPU to finish
     cudaDeviceSynchronize();
 
@@ -303,12 +304,12 @@ int main() {
         //Compare the results
         bool error_found = false;
         printf("Comparing results...\n");
-        for (int it = 0; it < nx*nz && !error_found; it ++)
+        for (int it = 0; it < nx * nz && !error_found; it++)
             for (int i0 = 0; i0 <= it; i0++)
             {
                 int i = (it * nx * nz * 2) + i0 * 2;
 
-                if ((fabs(pMI[i] - pMI_tmp[i]) > 0.0001) || (fabs(pMI[i + 1] - pMI_tmp[i + 1] > 0.0001))) 
+                if ((fabs(pMI[i] - pMI_tmp[i]) > 0.0001) || (fabs(pMI[i + 1] - pMI_tmp[i + 1] > 0.0001)))
                 {
                     std::cout << "Error at index i0 = " << (i0) << " it = " << it << std::endl;
                     std::cout << "CPU: " << pMI[i] << " + " << pMI[(i)+1] << " i " << std::endl;
@@ -343,9 +344,9 @@ int main() {
 
     cudaEventRecord(start_GPU);
     for (int i = 0; i < benchmarking_iter; i++)
-        MutualIntensityComponentCUDA_RLi(pMI_GPU2, pEx_GPU, pEz_GPU, nx*nz, iter0, tot_iter, PolCom);
+        MutualIntensityComponentCUDA_RLi(pMI_GPU2, pEx_GPU, pEz_GPU, nx * nz, iter0, tot_iter, PolCom);
     cudaEventRecord(stop_GPU);
-    
+
     //Wait for the GPU to finish
     cudaDeviceSynchronize();
 
@@ -355,14 +356,14 @@ int main() {
         cudaEventElapsedTime(&milliseconds, start_GPU, stop_GPU);
         printf("RLI GPU version took %f seconds\n", milliseconds / 1000 / benchmarking_iter);
     }
-    
+
     {
-        cudaMemcpy(pMI_tmp, pMI_GPU2, (nx*nz - itStart)*nx*nz*2 * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(pMI_tmp, pMI_GPU2, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyDeviceToHost);
 
         //Compare the results
         bool error_found = false;
         printf("Comparing results...\n");
-        for (int i = 0; i < (nx*nz - itStart)*nx*nz*2; i++) {
+        for (int i = 0; i < (nx * nz - itStart) * nx * nz * 2; i++) {
             if (fabs(pMI[i] - pMI_tmp[i]) > 0.0001) {
                 std::cout << "Error at index " << i << std::endl;
                 std::cout << "CPU: " << pMI[i] << std::endl;
@@ -374,7 +375,8 @@ int main() {
 
         if (!error_found) {
             printf("No errors found!\n");
-        }else
+        }
+        else
             return 0;
     }
 
