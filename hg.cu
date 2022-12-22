@@ -27,17 +27,17 @@ __global__ void MutualIntensExtract_PackUnPack(float* pMI0, long nxnz, float ite
 		}
 }
 //Dont need interp mode
-__global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* pMI0, long nxnz, long PerX, long iter)
+__global__ void MutualIntensExtract_v2_Kernel(const int* __restrict__ pt_coords, int pt_cnt, const float* __restrict__ pE, float* __restrict__ pMI0, long nxnz, long PerX, long iter)
 {
-	int pt_idx = blockIdx.x;// +threadIdx.y;
+	int pt_idx = blockIdx.x * blockDim.y + threadIdx.y;
 
 	int block_it = pt_coords[pt_idx];
-	int block_i = pt_coords[pt_idx + blockDim.x];
+	int block_i = pt_coords[pt_idx + pt_cnt];
 	int c_i = block_i + threadIdx.x; //nxnz range
 	int c_it = block_it + threadIdx.x; //nxnz range
 
-	__shared__ float rowR[32];
-	__shared__ float rowI[32];
+	//__shared__ float rowR[32];
+	//__shared__ float rowI[32];
 
 	float ExReT = 0.0f;
 	float ExImT = 0.0f;
@@ -46,35 +46,44 @@ __global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* 
 		ExReT = pE[c_it * PerX];
 		ExImT = pE[c_it * PerX + 1];
 	}
-	else
-		return;
 
-	if (c_i < nxnz) 
+	float rR = 0.0f;
+	float rI = 0.0f;
+	if (c_i == c_it)
 	{
-		rowR[threadIdx.x] = pE[c_i * PerX];
-		rowI[threadIdx.x] = pE[c_i * PerX + 1];
+		rR = ExReT;
+		rI = ExImT;
 	}
-	else
+	else if (c_i < nxnz)
 	{
-		rowR[threadIdx.x] = 0.0f;
-		rowI[threadIdx.x] = 0.0f;
+		rR = pE[c_i * PerX];
+		rI = pE[c_i * PerX + 1];
 	}
 
-	__syncwarp();
+	//__syncwarp();
+
+	const int cache_sz = 4;
+	float rcR[cache_sz];
+	float rcI[cache_sz];
 
 	float* pMI = pMI0 + block_it * (nxnz << 1) + (c_i << 1); //Will need to transpose these blocks afterwards
+	//float* pMI = pMI0 + c_it * (nxnz << 1) + (block_i << 1);
 	for (int x_i = 0; x_i < 32; x_i++)
 	{
+		if (x_i % cache_sz == 0)
+		{
+			for (int a = 0; a < cache_sz; a++)
+			{
+				rcR[a] = __shfl_sync(0xffffffff, rR, x_i + a);
+				rcI[a] = __shfl_sync(0xffffffff, rI, x_i + a);
+			}
+		}
 		if (block_i + x_i <= c_it)
 		{
-			float ExRe = ExReT;
-			float ExIm = ExImT;
-
-			if (block_i + x_i != c_it)
-			{
-				ExRe = rowR[x_i];
-				ExIm = rowI[x_i];
-			}
+			float ExRe = rcR[x_i % cache_sz];
+			float ExIm = rcI[x_i % cache_sz];
+			//if (block_i + x_i == 0 && c_it == 0)
+			//	printf("%f %f\n", ExRe, ExIm);
 
 			float ReMI = ExRe * ExReT + ExIm * ExImT;
 			float ImMI = ExIm * ExReT - ExRe * ExImT;
@@ -99,15 +108,140 @@ __global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* 
 			}
 
 			pMI += (nxnz << 1);
+			//pMI += 2;
 		}
-		else
-			break;
 	}
 }
 
 //Dont need interp mode
-template <int PolCom, bool EhOK, bool EvOK, bool gt1_TotIter, int itPerBlk>
-__global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter)
+template <int PolCom, bool EhOK, bool EvOK>
+__global__ void MutualIntensExtract_v3_Kernel(float* pEx0, float* pEz0, float* pMI0, long nxnz, long PerX, long iter, long pt_cnt)
+{
+	//Calculate coordinates as the typical triangular matrix
+	long idx = (blockIdx.x * blockDim.x + threadIdx.x) + 1;
+	if (idx >= pt_cnt) return;
+
+	int it0 = (idx / 2); //nxnz/(2*itPerBlk) range
+	int i0 = idx - it0; //<=nxnz range
+	
+	long it = it0;
+	long i = i0 - 1;
+	
+	//float* pMI = pMI0 + it0 * (nxnz << 1) + (i0 << 1); //Compact representation coordinates
+	float* pMI = pMI0 + (it) * (nxnz << 1) + (i << 1); //Full representation coordinates
+	float* pEx = pEx0 + i * PerX;
+	float* pEz = pEz0 + i * PerX;
+	float* pExT = pEx0 + (it) * PerX;
+	float* pEzT = pEz0 + (it) * PerX;
+
+	float ExRe = 0., ExIm = 0., EzRe = 0., EzIm = 0.;
+	float ExReT = 0., ExImT = 0., EzReT = 0., EzImT = 0.;
+
+	if (EhOK) { ExRe = *pEx; ExIm = *(pEx + 1); ExReT = *pExT; ExImT = *(pExT + 1); }
+	if (EvOK) { EzRe = *pEz; EzIm = *(pEz + 1); EzReT = *pEzT; EzImT = *(pEzT + 1); }
+	float ReMI = 0., ImMI = 0.;
+
+	switch (PolCom)
+	{
+	case 0: // Lin. Hor.
+	{
+		ReMI = ExRe * ExReT + ExIm * ExImT;
+		ImMI = ExIm * ExReT - ExRe * ExImT;
+		break;
+	}
+	case 1: // Lin. Vert.
+	{
+		ReMI = EzRe * EzReT + EzIm * EzImT;
+		ImMI = EzIm * EzReT - EzRe * EzImT;
+		break;
+	}
+	case 2: // Linear 45 deg.
+	{
+		float ExRe_p_EzRe = ExRe + EzRe, ExIm_p_EzIm = ExIm + EzIm;
+		float ExRe_p_EzReT = ExReT + EzReT, ExIm_p_EzImT = ExImT + EzImT;
+		ReMI = 0.5f * (ExRe_p_EzRe * ExRe_p_EzReT + ExIm_p_EzIm * ExIm_p_EzImT);
+		ImMI = 0.5f * (ExIm_p_EzIm * ExRe_p_EzReT - ExRe_p_EzRe * ExIm_p_EzImT);
+		break;
+	}
+	case 3: // Linear 135 deg.
+	{
+		float ExRe_mi_EzRe = ExRe - EzRe, ExIm_mi_EzIm = ExIm - EzIm;
+		float ExRe_mi_EzReT = ExReT - EzReT, ExIm_mi_EzImT = ExImT - EzImT;
+		ReMI = 0.5f * (ExRe_mi_EzRe * ExRe_mi_EzReT + ExIm_mi_EzIm * ExIm_mi_EzImT);
+		ImMI = 0.5f * (ExIm_mi_EzIm * ExRe_mi_EzReT - ExRe_mi_EzRe * ExIm_mi_EzImT);
+		break;
+	}
+	case 5: // Circ. Left //OC08092019: corrected to be in compliance with definitions for right-hand frame (x,z,s) and with corresponding definition and calculation of Stokes params
+		//case 4: // Circ. Right
+	{
+		float ExRe_mi_EzIm = ExRe - EzIm, ExIm_p_EzRe = ExIm + EzRe;
+		float ExRe_mi_EzImT = ExReT - EzImT, ExIm_p_EzReT = ExImT + EzReT;
+		ReMI = 0.5f * (ExRe_mi_EzIm * ExRe_mi_EzImT + ExIm_p_EzRe * ExIm_p_EzReT);
+		ImMI = 0.5f * (ExIm_p_EzRe * ExRe_mi_EzImT - ExRe_mi_EzIm * ExIm_p_EzReT);
+		break;
+	}
+	case 4: // Circ. Right //OC08092019: corrected to be in compliance with definitions for right-hand frame (x,z,s) and with corresponding definition and calculation of Stokes params
+		//case 5: // Circ. Left
+	{
+		float ExRe_p_EzIm = ExRe + EzIm, ExIm_mi_EzRe = ExIm - EzRe;
+		float ExRe_p_EzImT = ExReT + EzImT, ExIm_mi_EzReT = ExImT - EzReT;
+		ReMI = 0.5f * (ExRe_p_EzIm * ExRe_p_EzImT + ExIm_mi_EzRe * ExIm_mi_EzReT);
+		ImMI = 0.5f * (ExIm_mi_EzRe * ExRe_p_EzImT - ExRe_p_EzIm * ExIm_mi_EzReT);
+		break;
+	}
+	case -1: // s0
+	{
+		ReMI = ExRe * ExReT + ExIm * ExImT + EzRe * EzReT + EzIm * EzImT;
+		ImMI = ExIm * ExReT - ExRe * ExImT + EzIm * EzReT - EzRe * EzImT;
+		break;
+	}
+	case -2: // s1
+	{
+		ReMI = ExRe * ExReT + ExIm * ExImT - (EzRe * EzReT + EzIm * EzImT);
+		ImMI = ExIm * ExReT - ExRe * ExImT - (EzIm * EzReT - EzRe * EzImT);
+		break;
+	}
+	case -3: // s2
+	{
+		ReMI = ExImT * EzIm + ExIm * EzImT + ExReT * EzRe + ExRe * EzReT;
+		ImMI = ExReT * EzIm - ExRe * EzImT - ExImT * EzRe + ExIm * EzReT;
+		break;
+	}
+	case -4: // s3
+	{
+		ReMI = ExReT * EzIm + ExRe * EzImT - ExImT * EzRe - ExIm * EzReT;
+		ImMI = ExIm * EzImT - ExImT * EzIm - ExReT * EzRe + ExRe * EzReT;
+		break;
+	}
+	default: // total mutual intensity, same as s0
+	{
+		ReMI = ExRe * ExReT + ExIm * ExImT + EzRe * EzReT + EzIm * EzImT;
+		ImMI = ExIm * ExReT - ExRe * ExImT + EzIm * EzReT - EzRe * EzImT;
+		break;
+		//return CAN_NOT_EXTRACT_MUT_INT;
+	}
+	}
+
+	if (iter == 0)
+	{
+		pMI[0] = (float)ReMI;
+		pMI[1] = (float)ImMI;
+	}
+	else if (iter > 0)
+	{
+		pMI[0] = (pMI[0] * iter + (float)ReMI) / (float)(iter + 1.);
+		pMI[1] = (pMI[1] * iter + (float)ImMI) / (float)(iter + 1.);
+	}
+	else
+	{
+		pMI[0] += (float)ReMI;
+		pMI[1] += (float)ImMI;
+	}
+}
+
+//Dont need interp mode
+template <int PolCom, bool EhOK, bool EvOK, int gt1_iter, int itPerBlk>
+__global__ void MutualIntensExtract_Kernel(const float* __restrict__ pEx0, const float* __restrict__ pEz0, float* __restrict__ pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter)
 {
 	thread_block tb = this_thread_block();
 
@@ -115,8 +249,7 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 	int i0 = (blockIdx.x * blockDim.x + threadIdx.x); //<=nxnz range
 	int it0_0 = (blockIdx.y * blockDim.y + threadIdx.y); //nxnz/(2*itPerBlk) range
 	long iter = iter0;
-	if (gt1_TotIter) iter = ((blockIdx.z * blockDim.z + threadIdx.z) + iter0) % tot_iter; //[iter0, tot_iter) range
-
+	
 	if (i0 > nxnz) return;
 	if (it0_0 > nxnz / 2) return;
 
@@ -136,25 +269,36 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 
 		//float* pMI = pMI0 + it0 * (nxnz << 1) + (i0 << 1); //Compact representation coordinates
 		float* pMI = pMI0 + (it - itStart) * (nxnz << 1) + (i << 1); //Full representation coordinates
-		float* pEx = pEx0 + i * PerX;
-		float* pEz = pEz0 + i * PerX;
-		float* pExT = pEx0 + (it - itStart) * PerX;
-		float* pEzT = pEz0 + (it - itStart) * PerX;
-
-		if (gt1_TotIter)
-		{
-			pEx += ((iter - iter0) * nxnz * 2);
-			pEz += ((iter - iter0) * nxnz * 2);
-			pExT += ((iter - iter0) * nxnz * 2);
-			pEzT += ((iter - iter0) * nxnz * 2);
-		}
+		const float* pEx = pEx0 + i * PerX;
+		const float* pEz = pEz0 + i * PerX;
+		const float* pExT = pEx0 + (it - itStart) * PerX;
+		const float* pEzT = pEz0 + (it - itStart) * PerX;
 
 		float ExRe = 0., ExIm = 0., EzRe = 0., EzIm = 0.;
 		float ExReT = 0., ExImT = 0., EzReT = 0., EzImT = 0.;
 
 		{
-			if (EhOK) { ExRe = *pEx; ExIm = *(pEx + 1); ExReT = *pExT; ExImT = *(pExT + 1); }
-			if (EvOK) { EzRe = *pEz; EzIm = *(pEz + 1); EzReT = *pEzT; EzImT = *(pEzT + 1); }
+			if (EhOK) 
+			{ 
+				ExRe = *pEx; ExIm = *(pEx + 1); 
+				if (i != (it - itStart)) {
+					ExReT = *pExT; ExImT = *(pExT + 1);
+				}
+				else {
+					ExReT = ExRe;
+					ExImT = ExIm;
+				}
+			}
+			if (EvOK) { 
+				EzRe = *pEz; EzIm = *(pEz + 1); 
+				if (i != (it - itStart)) {
+					EzReT = *pEzT; EzImT = *(pEzT + 1);
+				}
+				else {
+					EzReT = EzRe;
+					EzImT = EzIm;
+				}
+			}
 		}
 		float ReMI = 0., ImMI = 0.;
 
@@ -239,50 +383,47 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 		}
 		}
 
-		if (gt1_TotIter)
+		if (gt1_iter > 0) 
 		{
-			//Gather all values updating the same point in the warp and write them in one go
-			int mask = __match_any_sync(__activemask(), ((long long)i0) << 32 | (long long)it0);
-			int leader = __ffs(mask) - 1;
-			for (int offset = 16; offset > 0; offset >>= 1)
-			{
-				ReMI += __shfl_down_sync(mask, ReMI, offset);
-				ImMI += __shfl_down_sync(mask, ImMI, offset);
-			}
-			if (threadIdx.x % 32 == leader)
-			{
-				atomicAdd(&pMI[0], (float)ReMI);
-				atomicAdd(&pMI[1], (float)ImMI);
-			}
+			pMI[0] = (pMI[0] * iter + (float)ReMI) / (float)(iter + 1.);
+			pMI[1] = (pMI[1] * iter + (float)ImMI) / (float)(iter + 1.);
 		}
-		else
+		else if (gt1_iter == 0)
 		{
-			if (iter == 0)
-			{
-				pMI[0] = (float)ReMI;
-				pMI[1] = (float)ImMI;
-			}
-			else if (iter > 0)
-			{
-				pMI[0] = (pMI[0] * iter + (float)ReMI) / (float)(iter + 1.);
-				pMI[1] = (pMI[1] * iter + (float)ImMI) / (float)(iter + 1.);
-			}
-			else
-			{
-				pMI[0] += (float)ReMI;
-				pMI[1] += (float)ImMI;
-			}
+			pMI[0] = (float)ReMI;
+			pMI[1] = (float)ImMI;
+		}
+		else 
+		{
+			pMI[0] += (float)ReMI;
+			pMI[1] += (float)ImMI;
 		}
 	}
 }
 
-template <int PolCom, bool gt1_TotIter>
+template <int PolCom, int gt1_iter>
 void MutualIntensExtract_CUDA_Sub(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter, bool EhOK, bool EvOK)
 {
-#define KERNEL_V2
-#ifdef KERNEL_V2
+#define KERNEL_V1
+#ifdef KERNEL_V3
+	long ptCnt = nxnz % 2 == 0 ? nxnz / 2 * (nxnz + 1) : nxnz * (nxnz + 1) / 2;
+	dim3 threads = dim3(512, 1, 1);
+	dim3 grid = dim3(ptCnt / threads.x + ((ptCnt % threads.x) > 0), 1, 1);
 
-	dim3 threads = dim3(32, 1, 1);
+	for (int iter = iter0; iter < tot_iter; iter++)
+		if (EhOK)
+		{
+			if (EvOK) MutualIntensExtract_v3_Kernel<PolCom, true, true> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, PerX, iter, ptCnt);
+			else MutualIntensExtract_v3_Kernel<PolCom, true, false> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, PerX, iter, ptCnt);
+		}
+		else
+		{
+			if (EvOK) MutualIntensExtract_v3_Kernel<PolCom, false, true> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, PerX, iter, ptCnt);
+			else MutualIntensExtract_v3_Kernel<PolCom, false, false> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, PerX, iter, ptCnt);
+		}
+#elif defined(KERNEL_V2)
+
+	dim3 threads = dim3(32, 4, 1);
 
 	long r_nxnz = nxnz / threads.x + ((nxnz % threads.x) > 0);
 	long pt_cnt = (r_nxnz * (r_nxnz + 1)) / 2;
@@ -304,85 +445,84 @@ void MutualIntensExtract_CUDA_Sub(float* pEx0, float* pEz0, float* pMI0, long nx
 
 	for (int i = iter0; i < tot_iter; i++)
 		if (PolCom == 0)
-			MutualIntensExtract_v2_Kernel<< <grid, threads >> > (pt_coords_cuda, pEx0, pMI0, nxnz, PerX, i);
+			MutualIntensExtract_v2_Kernel<< <grid, threads >> > (pt_coords_cuda, pt_cnt, pEx0, pMI0, nxnz, PerX, i);
 		else if (PolCom == 1)
-			MutualIntensExtract_v2_Kernel << <grid, threads >> > (pt_coords_cuda, pEz0, pMI0, nxnz, PerX, i);
+			MutualIntensExtract_v2_Kernel << <grid, threads >> > (pt_coords_cuda, pt_cnt, pEz0, pMI0, nxnz, PerX, i);
 
 	cudaFreeAsync(pt_coords_cuda, 0);
 
 #else
 	const int itPerBlk = 1;
-	dim3 threads = dim3(1, 1, 1);
-	if (gt1_TotIter && (tot_iter - iter0) >= 16)
-		threads = dim3(48, 1, 16);
-	else
-		threads = dim3(48, 16, 1);
+	dim3 threads = dim3(48, 16, 1);
 	dim3 grid = dim3((nxnz + 1) / threads.x + (threads.x > 1), (nxnz / 2) / (threads.y * itPerBlk) + (threads.y > 1), (tot_iter - iter0) / threads.z + (threads.z > 1));
 
-	if (EhOK)
-	{
-		if (EvOK) MutualIntensExtract_Kernel<PolCom, true, true, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
-		else MutualIntensExtract_Kernel<PolCom, true, false, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
-	}
-	else
-	{
-		if (EvOK) MutualIntensExtract_Kernel<PolCom, false, true, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
-		else MutualIntensExtract_Kernel<PolCom, false, false, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
-	}
+	for (int i = 0; i < tot_iter - iter0; i++)
+		if (EhOK)
+		{
+			if (EvOK) MutualIntensExtract_Kernel<PolCom, true, true, gt1_iter, itPerBlk> << <grid, threads >> > (pEx0 + i * nxnz*2, pEz0 + i * nxnz * 2, pMI0, nxnz, itStart, itEnd, PerX, iter0+i, tot_iter);
+			else MutualIntensExtract_Kernel<PolCom, true, false, gt1_iter, itPerBlk> << <grid, threads >> > (pEx0 + i * nxnz * 2, pEz0 + i * nxnz * 2, pMI0, nxnz, itStart, itEnd, PerX, iter0+i, tot_iter);
+		}
+		else
+		{
+			if (EvOK) MutualIntensExtract_Kernel<PolCom, false, true, gt1_iter, itPerBlk> << <grid, threads >> > (pEx0 + i * nxnz * 2, pEz0 + i * nxnz * 2, pMI0, nxnz, itStart, itEnd, PerX, iter0+i, tot_iter);
+			else MutualIntensExtract_Kernel<PolCom, false, false, gt1_iter, itPerBlk> << <grid, threads >> > (pEx0 + i * nxnz * 2, pEz0 + i * nxnz * 2, pMI0, nxnz, itStart, itEnd, PerX, iter0+i, tot_iter);
+		}
 #endif
 }
 
 void MutualIntensityComponentCUDA_Hg(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter, int PolCom, bool EhOK, bool EvOK)
 {
-	if (tot_iter - iter0 > 1)
+	if (iter0 > 0)
 	{
-		const int perBlk = 32;
-		dim3 threads = dim3(256, 1, 1);
-		dim3 grid = dim3((nxnz / (threads.x * perBlk)) + 1, 1, 1);
-		if (nxnz % (threads.x * perBlk) == 0) grid.x--;
-		//Un-average mutual intensity
-		MutualIntensExtract_PackUnPack<perBlk> << <grid, threads >> > (pMI0, nxnz, iter0);
-
 		//Perform mutual intensity extraction
 		switch (PolCom)
 		{
-		case  0: MutualIntensExtract_CUDA_Sub<  0, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  1: MutualIntensExtract_CUDA_Sub<  1, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  2: MutualIntensExtract_CUDA_Sub<  2, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  3: MutualIntensExtract_CUDA_Sub<  3, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  4: MutualIntensExtract_CUDA_Sub<  4, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  5: MutualIntensExtract_CUDA_Sub<  5, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -1: MutualIntensExtract_CUDA_Sub< -1, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -2: MutualIntensExtract_CUDA_Sub< -2, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -3: MutualIntensExtract_CUDA_Sub< -3, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -4: MutualIntensExtract_CUDA_Sub< -4, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		default: MutualIntensExtract_CUDA_Sub< -5, true>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  0: MutualIntensExtract_CUDA_Sub<  0, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  1: MutualIntensExtract_CUDA_Sub<  1, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  2: MutualIntensExtract_CUDA_Sub<  2, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  3: MutualIntensExtract_CUDA_Sub<  3, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  4: MutualIntensExtract_CUDA_Sub<  4, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  5: MutualIntensExtract_CUDA_Sub<  5, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -1: MutualIntensExtract_CUDA_Sub< -1, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -2: MutualIntensExtract_CUDA_Sub< -2, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -3: MutualIntensExtract_CUDA_Sub< -3, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -4: MutualIntensExtract_CUDA_Sub< -4, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		default: MutualIntensExtract_CUDA_Sub< -5, 1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
 		}
-
-		//Re-average mutual intensity
-		if (tot_iter > 1) MutualIntensExtract_PackUnPack<perBlk> << <grid, threads >> > (pMI0, nxnz, 1.0 / tot_iter);
-
 	}
-	else if (tot_iter - iter0 == 1)
+	else if(iter0 == 0)
 	{
 		//No need for separate handling of averaging, the main kernel can handle it
 		switch (PolCom)
 		{
-		case  0: MutualIntensExtract_CUDA_Sub<  0, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  1: MutualIntensExtract_CUDA_Sub<  1, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  2: MutualIntensExtract_CUDA_Sub<  2, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  3: MutualIntensExtract_CUDA_Sub<  3, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  4: MutualIntensExtract_CUDA_Sub<  4, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case  5: MutualIntensExtract_CUDA_Sub<  5, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -1: MutualIntensExtract_CUDA_Sub< -1, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -2: MutualIntensExtract_CUDA_Sub< -2, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -3: MutualIntensExtract_CUDA_Sub< -3, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		case -4: MutualIntensExtract_CUDA_Sub< -4, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
-		default: MutualIntensExtract_CUDA_Sub< -5, false>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  0: MutualIntensExtract_CUDA_Sub<  0, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  1: MutualIntensExtract_CUDA_Sub<  1, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  2: MutualIntensExtract_CUDA_Sub<  2, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  3: MutualIntensExtract_CUDA_Sub<  3, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  4: MutualIntensExtract_CUDA_Sub<  4, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  5: MutualIntensExtract_CUDA_Sub<  5, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -1: MutualIntensExtract_CUDA_Sub< -1, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -2: MutualIntensExtract_CUDA_Sub< -2, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -3: MutualIntensExtract_CUDA_Sub< -3, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -4: MutualIntensExtract_CUDA_Sub< -4, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		default: MutualIntensExtract_CUDA_Sub< -5, 0>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
 		}
 	}
 	else
 	{
-		printf("Error: MutualIntensExtract_CUDA: tot_iter - iter0 <= 0");
+		switch (PolCom)
+		{
+		case  0: MutualIntensExtract_CUDA_Sub<  0,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  1: MutualIntensExtract_CUDA_Sub<  1,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  2: MutualIntensExtract_CUDA_Sub<  2,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  3: MutualIntensExtract_CUDA_Sub<  3,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  4: MutualIntensExtract_CUDA_Sub<  4,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case  5: MutualIntensExtract_CUDA_Sub<  5,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -1: MutualIntensExtract_CUDA_Sub< -1,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -2: MutualIntensExtract_CUDA_Sub< -2,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -3: MutualIntensExtract_CUDA_Sub< -3,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		case -4: MutualIntensExtract_CUDA_Sub< -4,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		default: MutualIntensExtract_CUDA_Sub< -5,-1>(pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter, EhOK, EvOK); break;
+		}
 	}
 }
