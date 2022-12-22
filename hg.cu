@@ -26,6 +26,78 @@ __global__ void MutualIntensExtract_PackUnPack(float* pMI0, long nxnz, float ite
 			pMI0[idx * 2 + 1] = pMI0[idx * 2 + 1] * iter;
 		}
 }
+//Dont need interp mode
+__global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* pMI0, long nxnz, long PerX, long iter)
+{
+	int pt_idx = blockIdx.x;// +threadIdx.y;
+
+	int block_i = pt_coords[2 * pt_idx + 1];
+	int block_it = pt_coords[2 * pt_idx];
+
+	__shared__ float rowR[32];
+	__shared__ float rowI[32];
+
+	int c_i = block_i + threadIdx.x; //nxnz range
+	int c_it = block_it + threadIdx.x; //nxnz range
+	if (c_i < nxnz) 
+	{
+		rowR[threadIdx.x] = pE[c_i * PerX];
+		rowI[threadIdx.x] = pE[c_i * PerX + 1];
+	}
+	else
+	{
+		rowR[threadIdx.x] = 0.0f;
+		rowI[threadIdx.x] = 0.0f;
+	}
+
+	float ExReT = 0.0f;
+	float ExImT = 0.0f;
+	if (c_it < nxnz)
+	{
+		ExReT = pE[c_it * PerX];
+		ExImT = pE[c_it * PerX + 1];
+	}
+	else
+		return;
+
+	__syncwarp();
+
+	float* pMI = pMI0 + c_it * (nxnz << 1) + (block_i << 1);
+	for (int x_i = 0; x_i < 32; x_i++)
+	{
+		if (block_i + x_i <= c_it)
+		{
+			float ExRe = rowR[x_i];
+			float ExIm = rowI[x_i];
+
+			float ReMI = ExRe * ExReT + ExIm * ExImT;
+			float ImMI = ExIm * ExReT - ExRe * ExImT;
+			
+			//if (block_i + x_i == 0 && c_it == 32)
+			//	printf("%f %f, %f %f", ExRe, ExIm, ExReT, ExImT);
+
+			if (iter == 0)
+			{
+				pMI[0] = (float)ReMI;
+				pMI[1] = (float)ImMI;
+			}
+			else if (iter > 0)
+			{
+				pMI[0] = (pMI[0] * iter + (float)ReMI) / (float)(iter + 1.);
+				pMI[1] = (pMI[1] * iter + (float)ImMI) / (float)(iter + 1.);
+			}
+			else
+			{
+				pMI[0] += (float)ReMI;
+				pMI[1] += (float)ImMI;
+			}
+
+			pMI += 2;
+		}
+		else
+			break;
+	}
+}
 
 //Dont need interp mode
 template <int PolCom, bool EhOK, bool EvOK, bool gt1_TotIter, int itPerBlk>
@@ -56,12 +128,12 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 			return;
 		}
 
-		//float* pMI = pMI0 + it0 * nxnz + (i << 1); //Compact representation coordinates
+		//float* pMI = pMI0 + it0 * (nxnz << 1) + (i0 << 1); //Compact representation coordinates
 		float* pMI = pMI0 + (it - itStart) * (nxnz << 1) + (i << 1); //Full representation coordinates
-		float* pEx = pEx0 + (i * PerX);
-		float* pEz = pEz0 + (i * PerX);
-		float* pExT = pEx0 + ((it - itStart) * PerX);
-		float* pEzT = pEz0 + ((it - itStart) * PerX);
+		float* pEx = pEx0 + i * PerX;
+		float* pEz = pEz0 + i * PerX;
+		float* pExT = pEx0 + (it - itStart) * PerX;
+		float* pEzT = pEz0 + (it - itStart) * PerX;
 
 		if (gt1_TotIter)
 		{
@@ -74,69 +146,6 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 		float ExRe = 0., ExIm = 0., EzRe = 0., EzIm = 0.;
 		float ExReT = 0., ExImT = 0., EzReT = 0., EzImT = 0.;
 
-		/*bool usewarptrick = it0 >= 32 && ((i & ~31) + 32) <= it && i0 < it0;
-		int mask = 0xffffffff;
-		if (usewarptrick)
-		{
-			if (EhOK)
-			{
-				//printf("i %d it0 %d it %d\n", i, it0, it);
-				float* tmp = pEx0 + ((i & ~31)) * PerX; //Round down to multiple of warp size
-
-				float tmp0 = tmp[i % 32];
-				float tmp1 = tmp[(i % 32) + 32];
-
-				//Figure out how to redistribute this data between warps
-				float ExRe0 = __shfl_sync(mask, tmp0, (i % 16) * 2);
-				float ExIm0 = __shfl_sync(mask, tmp0, (i % 16) * 2 + 1);
-
-				float ExRe1 = __shfl_sync(mask, tmp1, (i % 16) * 2);
-				float ExIm1 = __shfl_sync(mask, tmp1, (i % 16) * 2 + 1);
-
-				if ((i % 32) >= 16)
-				{
-					ExRe = ExRe1; ExIm = ExIm1;
-
-					//if (it0 == 4999 && i0 < 64)
-					//	printf("[%d][%d][%d][%d] nExRe: %f, oExRe : %f, tmp: %p, pEx: %p\n", i0, i, it0, threadIdx.x % 32, ExRe1, *pEx, tmp, pEx);
-				}
-				else
-				{
-					ExRe = ExRe0; ExIm = ExIm0;
-
-					//if (it0 == 4999 && i0 < 64)
-					//	printf("[%d][%d][%d][%d] nExRe: %f, oExRe : %f, tmp: %p, pEx: %p\n", i0, i, it0, threadIdx.x % 32, ExRe0, *pEx, tmp, pEx);
-				}
-
-				ExReT = *pExT; ExImT = *(pExT + 1);
-			}
-			if (EvOK)
-			{
-				float* tmp = pEz0 + ((i & ~31)) * PerX; //Round down to multiple of warp size
-
-				float tmp0 = tmp[i % 32];
-				float tmp1 = tmp[(i % 32) + 32];
-
-				//Figure out how to redistribute this data between warps
-				float EzRe0 = __shfl_sync(mask, tmp0, (i % 16) * 2);
-				float EzIm0 = __shfl_sync(mask, tmp0, (i % 16) * 2 + 1);
-
-				float EzRe1 = __shfl_sync(mask, tmp1, (i % 16) * 2);
-				float EzIm1 = __shfl_sync(mask, tmp1, (i % 16) * 2 + 1);
-
-				if ((i % 32) >= 16)
-				{
-					EzRe = EzRe1; EzIm = EzIm1;
-				}
-				else
-				{
-					EzRe = EzRe0; EzIm = EzIm0;
-				}
-
-				EzReT = *pEzT; EzImT = *(pEzT + 1);
-			}
-		}
-		else*/
 		{
 			if (EhOK) { ExRe = *pEx; ExIm = *(pEx + 1); ExReT = *pExT; ExImT = *(pExT + 1); }
 			if (EvOK) { EzRe = *pEz; EzIm = *(pEz + 1); EzReT = *pEzT; EzImT = *(pEzT + 1); }
@@ -264,6 +273,37 @@ __global__ void MutualIntensExtract_Kernel(float* pEx0, float* pEz0, float* pMI0
 template <int PolCom, bool gt1_TotIter>
 void MutualIntensExtract_CUDA_Sub(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter, bool EhOK, bool EvOK)
 {
+#define KERNEL_V2
+#ifdef KERNEL_V2
+
+	dim3 threads = dim3(32, 1, 1);
+
+	long r_nxnz = nxnz / threads.x + ((nxnz % threads.x) > 0);
+	long pt_cnt = (r_nxnz * (r_nxnz + 1)) / 2;
+
+	int* pt_coords = new int[pt_cnt * 2];
+	int idx = 0;
+	for (int i0 = 0; i0 < r_nxnz; i0++)
+		for (int j0 = 0; j0 <= i0; j0++)
+		{
+			pt_coords[idx++] = i0 * 32;
+			pt_coords[idx++] = j0 * 32;
+		}
+	int* pt_coords_cuda;
+	cudaMalloc((void**)&pt_coords_cuda, pt_cnt * 2 * sizeof(int));
+	cudaMemcpyAsync(pt_coords_cuda, pt_coords, pt_cnt * 2 * sizeof(int), cudaMemcpyHostToDevice);
+
+	dim3 grid = dim3(pt_cnt / threads.y + ((pt_cnt % threads.y) > 0), 1, 1);
+
+	for (int i = iter0; i < tot_iter; i++)
+		if (PolCom == 0)
+			MutualIntensExtract_v2_Kernel<< <grid, threads >> > (pt_coords_cuda, pEx0, pMI0, nxnz, PerX, i);
+		else if (PolCom == 1)
+			MutualIntensExtract_v2_Kernel << <grid, threads >> > (pt_coords_cuda, pEz0, pMI0, nxnz, PerX, i);
+
+	cudaFreeAsync(pt_coords_cuda, 0);
+
+#else
 	const int itPerBlk = 1;
 	dim3 threads = dim3(1, 1, 1);
 	if (gt1_TotIter && (tot_iter - iter0) >= 16)
@@ -282,6 +322,7 @@ void MutualIntensExtract_CUDA_Sub(float* pEx0, float* pEz0, float* pMI0, long nx
 		if (EvOK) MutualIntensExtract_Kernel<PolCom, false, true, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
 		else MutualIntensExtract_Kernel<PolCom, false, false, gt1_TotIter, itPerBlk> << <grid, threads >> > (pEx0, pEz0, pMI0, nxnz, itStart, itEnd, PerX, iter0, tot_iter);
 	}
+#endif
 }
 
 void MutualIntensityComponentCUDA_Hg(float* pEx0, float* pEz0, float* pMI0, long nxnz, long itStart, long itEnd, long PerX, long iter0, long tot_iter, int PolCom, bool EhOK, bool EvOK)

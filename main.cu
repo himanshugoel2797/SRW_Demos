@@ -177,7 +177,7 @@ int main() {
     const bool EhOK = true;
     const bool EvOK = true;
 
-    const bool benchmarking = true;
+    const bool benchmarking = !true;
     const int benchmarking_iter = benchmarking ? 1000 : 1;
     const int cpu_benchmarking_iter = benchmarking ? 100 : 1;
     const int float_pres = 1000;
@@ -187,6 +187,7 @@ int main() {
     //Allocate memory and populate with random data
     float* pEx = new float[tot_iter * nx * nz * 2];
     float* pEz = new float[tot_iter * nx * nz * 2];
+    float* pE_tmp = new float[tot_iter * nx * nz * 2];
     float* pMI = new float[(nx * nz - itStart) * nx * nz * 2];
     float* pMI_tmp = new float[(nx * nz - itStart) * nx * nz * 2];
 
@@ -204,7 +205,7 @@ int main() {
     for (int i = 0; i < (nx * nz - itStart) * nx * nz * 2; i++) pMI[i] = 0.f;
 
     cudaMemcpy(pEx_GPU, pEx, tot_iter * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(pEz_GPU, pEz, tot_iter * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(pEz_GPU, pEz, tot_iter* nx* nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(pMI_GPU, pMI, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(pMI_GPU2, pMI, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyHostToDevice);
 
@@ -212,6 +213,13 @@ int main() {
     cudaEvent_t start_GPU, stop_GPU;
     cudaEventCreate(&start_GPU);
     cudaEventCreate(&stop_GPU);
+
+    //Setup cuBLAS
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+    cuComplex alpha = make_cuFloatComplex(1, 1);
+    float alpha_f = 1.0f;
+    cuComplex beta = make_cuFloatComplex(0, 0);
 
     //Call the CPU function
     printf("Running CPU version...\n");
@@ -231,7 +239,10 @@ int main() {
 
     cudaEventRecord(start_GPU);
     for (int i = 0; i < benchmarking_iter; i++)
+    {
         MutualIntensityComponentCUDA_Hg(pEx_GPU, pEz_GPU, pMI_GPU, nx * nz, itStart, nx * nz, 2, iter0, tot_iter, PolCom, EhOK, EvOK);
+        //cublasCtpttr(handle, CUBLAS_FILL_MODE_UPPER, nx * nz, (cuComplex*)pMI_GPU, (cuComplex*)pMI_GPU, nx * nz);
+    }
     cudaEventRecord(stop_GPU);
 
     //Wait for the GPU to finish
@@ -260,6 +271,7 @@ int main() {
                 std::cout << "Error at it = " << it << " i = " << i_ << " it0 = " << it0 << " i0 = " << i0 << " warpbase_i = " << warpbase_i << std::endl;
                 std::cout << "CPU: " << pMI[i] << std::endl;
                 std::cout << "GPU: " << pMI_tmp[i] << std::endl;
+                std::cout << pEx[i_ * 2] << " + i " << pEx[i_ * 2 + 1] << std::endl;
                 error_found = true;
                 break;
             }
@@ -272,69 +284,22 @@ int main() {
             return 0;
     }
 
-    //CuBLAS version
-    printf("Running CuBLAS version...\n");
-
-    cublasHandle_t handle;
-    cublasCreate(&handle);
-    cuComplex alpha = make_cuFloatComplex(1, 1);
-    float alpha_f = 1.0f;
-    cuComplex beta = make_cuFloatComplex(0, 0);
-    cudaEventRecord(start_GPU);
-    //cublasCgerc(handle, nx * nz, nx * nz, &alpha, (const cuComplex*)pEx_GPU, 1, (const cuComplex*)pEx_GPU, 1, (cuComplex*)pMI_GPU2, nx * nz);
-    //cublasCgeam(handle, CUBLAS_OP_T, CUBLAS_OP_N, nx * nz, nx * nz, &alpha, (cuComplex*)pMI_GPU2, nx * nz, &beta, (cuComplex*)pMI_GPU2, nx * nz, (cuComplex*)pMI_GPU2, nx * nz);
-    auto status = cublasCher(handle, CUBLAS_FILL_MODE_UPPER, nx * nz, &alpha_f, (cuComplex*)pEx_GPU, 1, (cuComplex*)pMI_GPU2, nx * nz);
-    //cublasCtpttr(handle, CUBLAS_FILL_MODE_LOWER, nx * nz, (cuComplex*)pMI_GPU, (cuComplex*)pMI_GPU2, nx * nz);
-    cudaEventRecord(stop_GPU);
-
-    //Wait for the GPU to finish
-    cudaDeviceSynchronize();
-
-    if (benchmarking)
+    //Eigenvalue decomposition
+    for (int i = 0; i < nx; i++)
     {
-        float milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, start_GPU, stop_GPU);
-        printf("CuBLAS version took %f seconds\n", milliseconds / 1000 / benchmarking_iter);
-    }
+        for (int j = 0; j < nz; j++)
+        {
+            int sum = 0;
 
-    {
-        for (int i = 0; i < (nx * nz - itStart) * nx * nz * 2; i++) pMI_tmp[i] = 0.f;
-        cudaMemcpy(pMI_tmp, pMI_GPU2, (nx * nz - itStart) * nx * nz * 2 * sizeof(float), cudaMemcpyDeviceToHost);
-
-        //Compare the results
-        bool error_found = false;
-        printf("Comparing results...\n");
-        for (int it = 0; it < nx * nz && !error_found; it++)
-            for (int i0 = 0; i0 <= it; i0++)
+            if (j == i)
             {
-                int i = (it * nx * nz * 2) + i0 * 2;
-
-                if ((fabs(pMI[i] - pMI_tmp[i]) > 0.0001) || (fabs(pMI[i + 1] - pMI_tmp[i + 1] > 0.0001)))
-                {
-                    std::cout << "Error at index i0 = " << (i0) << " it = " << it << std::endl;
-                    std::cout << "CPU: " << pMI[i] << " + " << pMI[(i)+1] << " i " << std::endl;
-                    std::cout << "GPU: " << pMI_tmp[i] << " + " << pMI_tmp[(i)+1] << " i " << std::endl;
-                    std::cout << "Src0: " << pEx[(i0)] << " + " << pEx[(i0)+1] << " i " << std::endl;
-                    std::cout << "Src1: " << pEx[(it)] << " + " << pEx[(it)+1] << " i " << std::endl;
-
-                    std::cout << "Swapped:" << std::endl;
-
-                    i = (i0 * nx * nz * 2) + it * 2;
-                    std::cout << "CPU: " << pMI[i] << " + " << pMI[(i)+1] << " i " << std::endl;
-                    std::cout << "GPU: " << pMI_tmp[i] << " + " << pMI_tmp[(i)+1] << " i " << std::endl;
-                    std::cout << "Src0: " << pEx[(i0)] << " + " << pEx[(i0)+1] << " i " << std::endl;
-                    std::cout << "Src1: " << pEx[(it)] << " + " << pEx[(it)+1] << " i " << std::endl;
-
-                    error_found = true;
-                    break;
-                }
+                //Launch kernel to sum from 0 to j with lower[j][k]^2 and fill lower[j][j]
             }
-
-        if (!error_found) {
-            printf("No errors found!\n");
+            else 
+            {
+                //Launch kernel to sum from 0 to j and fill lower[i][j]
+            }
         }
-        else
-            return 0;
     }
 
     return 0;
