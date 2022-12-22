@@ -31,24 +31,13 @@ __global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* 
 {
 	int pt_idx = blockIdx.x;// +threadIdx.y;
 
-	int block_i = pt_coords[2 * pt_idx + 1];
-	int block_it = pt_coords[2 * pt_idx];
+	int block_it = pt_coords[pt_idx];
+	int block_i = pt_coords[pt_idx + blockDim.x];
+	int c_i = block_i + threadIdx.x; //nxnz range
+	int c_it = block_it + threadIdx.x; //nxnz range
 
 	__shared__ float rowR[32];
 	__shared__ float rowI[32];
-
-	int c_i = block_i + threadIdx.x; //nxnz range
-	int c_it = block_it + threadIdx.x; //nxnz range
-	if (c_i < nxnz) 
-	{
-		rowR[threadIdx.x] = pE[c_i * PerX];
-		rowI[threadIdx.x] = pE[c_i * PerX + 1];
-	}
-	else
-	{
-		rowR[threadIdx.x] = 0.0f;
-		rowI[threadIdx.x] = 0.0f;
-	}
 
 	float ExReT = 0.0f;
 	float ExImT = 0.0f;
@@ -60,15 +49,32 @@ __global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* 
 	else
 		return;
 
+	if (c_i < nxnz) 
+	{
+		rowR[threadIdx.x] = pE[c_i * PerX];
+		rowI[threadIdx.x] = pE[c_i * PerX + 1];
+	}
+	else
+	{
+		rowR[threadIdx.x] = 0.0f;
+		rowI[threadIdx.x] = 0.0f;
+	}
+
 	__syncwarp();
 
-	float* pMI = pMI0 + c_it * (nxnz << 1) + (block_i << 1);
+	float* pMI = pMI0 + block_it * (nxnz << 1) + (c_i << 1); //Will need to transpose these blocks afterwards
 	for (int x_i = 0; x_i < 32; x_i++)
 	{
 		if (block_i + x_i <= c_it)
 		{
-			float ExRe = rowR[x_i];
-			float ExIm = rowI[x_i];
+			float ExRe = ExReT;
+			float ExIm = ExImT;
+
+			if (block_i + x_i != c_it)
+			{
+				ExRe = rowR[x_i];
+				ExIm = rowI[x_i];
+			}
 
 			float ReMI = ExRe * ExReT + ExIm * ExImT;
 			float ImMI = ExIm * ExReT - ExRe * ExImT;
@@ -92,7 +98,7 @@ __global__ void MutualIntensExtract_v2_Kernel(int* pt_coords, float* pE, float* 
 				pMI[1] += (float)ImMI;
 			}
 
-			pMI += 2;
+			pMI += (nxnz << 1);
 		}
 		else
 			break;
@@ -286,8 +292,9 @@ void MutualIntensExtract_CUDA_Sub(float* pEx0, float* pEz0, float* pMI0, long nx
 	for (int i0 = 0; i0 < r_nxnz; i0++)
 		for (int j0 = 0; j0 <= i0; j0++)
 		{
-			pt_coords[idx++] = i0 * 32;
-			pt_coords[idx++] = j0 * 32;
+			pt_coords[idx] = i0 * 32;
+			pt_coords[idx+pt_cnt] = j0 * 32;
+			idx++;
 		}
 	int* pt_coords_cuda;
 	cudaMalloc((void**)&pt_coords_cuda, pt_cnt * 2 * sizeof(int));
