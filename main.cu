@@ -10,7 +10,7 @@
 #include <math.h>
 #include <chrono>
 #include <complex>
-#include <cublas_v2.h>
+//#include <cublas_v2.h>
 
 using namespace std;
 using namespace std::chrono;
@@ -171,18 +171,19 @@ int main() {
     const int PolCom = 0;
     const int iter0 = 0;
     const int tot_iter = 1;
-    const int nx = 150;
-    const int nz = 150;
+    const int nx = 100;
+    const int nz = 100;
     const int itStart = 0;
     const bool EhOK = true;
     const bool EvOK = true;
 
-    const bool benchmarking = !true;
+    const bool benchmarking = true;
     const int benchmarking_iter = benchmarking ? 1000 : 1;
     const int cpu_benchmarking_iter = benchmarking ? 100 : 1;
     const int float_pres = 1000;
 
     printf("Initializing data...\n");
+    cudaSetDevice(1);
 
     //Allocate memory and populate with random data
     float* pEx = new float[tot_iter * nx * nz * 2];
@@ -215,11 +216,11 @@ int main() {
     cudaEventCreate(&stop_GPU);
 
     //Setup cuBLAS
-    cublasHandle_t handle;
-    cublasCreate(&handle);
-    cuComplex alpha = make_cuFloatComplex(1, 1);
-    float alpha_f = 1.0f;
-    cuComplex beta = make_cuFloatComplex(0, 0);
+    //cublasHandle_t handle;
+    //cublasCreate(&handle);
+    //cuComplex alpha = make_cuFloatComplex(1, 1);
+    //float alpha_f = 1.0f;
+    //cuComplex beta = make_cuFloatComplex(0, 0);
 
     //Call the CPU function
     printf("Running CPU version...\n");
@@ -283,26 +284,6 @@ int main() {
         else
             return 0;
     }
-
-    //Eigenvalue decomposition
-    for (int i = 0; i < nx; i++)
-    {
-        for (int j = 0; j < nz; j++)
-        {
-            int sum = 0;
-
-            if (j == i)
-            {
-                //Launch kernel to sum from 0 to j with lower[j][k]^2 and fill lower[j][j]
-            }
-            else 
-            {
-                //Launch kernel to sum from 0 to j and fill lower[i][j]
-            }
-        }
-    }
-
-    return 0;
 
     //Call the RLI version of the GPU function
     printf("Running RLI GPU version...\n");
